@@ -1,8 +1,9 @@
+from collections import defaultdict
 import networkx as nx
 import csv
 import matplotlib.pyplot as plt
 from pathlib import Path
-
+import pandas as pd
 
 def get_go_annotation_data(filepath):
     result = []
@@ -87,6 +88,32 @@ def parse_obo_file(filepath):
     return terms
 
 
+def rank_go_terms(gene_to_terms):
+    term_to_genes = defaultdict(set)
+    max_depth = 0
+
+    # Build reverse index: GO term -> set of genes
+    for gene, terms in gene_to_terms.items():
+        for go_term, depth in terms:
+            term_to_genes[go_term].add(gene)
+            max_depth = max(max_depth, depth)
+
+    # Score each GO term
+    ranked_terms = []
+    for term, genes in term_to_genes.items():
+        depth = max(
+            d for g, terms in gene_to_terms.items() for (t, d) in terms if t == term
+        )
+        weight = depth / max_depth
+        frequency = len(genes)  # how many genes have this term
+        score = weight * frequency
+        ranked_terms.append((term, score, depth, frequency))
+
+    # Sort by score (highest first)
+    ranked_terms.sort(key=lambda x: x[1], reverse=True)
+    return ranked_terms
+
+
 def main():
 
     # Get GO terms and the hierarchy
@@ -109,7 +136,11 @@ def main():
 
         # add new edges
         if go_id not in G.nodes():
-            G.add_node(go_id)
+            G.add_node(go_id, name=name)
+        elif (
+            "name" not in G.nodes[go_id]
+        ):  # handles the case when we add a node in the edges TODO probably theres a better way to handle this
+            G.nodes[go_id]["name"] = name
 
         # add parent terms
         if "is_a" in term:
@@ -155,14 +186,13 @@ def main():
 
     depths = {}
 
-    # topological sort ensures we process parents before children
-    for node in nx.topological_sort(G):
-        preds = list(G.predecessors(node))
-        if not preds:  # no parents
+    # Process nodes so parents come before children
+    for node in nx.topological_sort(G.reverse()):
+        preds = list(G.successors(node))  # successors in original graph
+        if not preds:  # no children → top/general node
             depths[node] = 0
         else:
-            depths[node] = 1 + max(depths[p] for p in preds)
-
+            depths[node] = 1 + max(depths[c] for c in preds)
     nx.set_node_attributes(G, depths, "depth")
     depth_data = []
     min_depth = float("inf")
@@ -170,7 +200,6 @@ def main():
     depth_fig_path = Path("./output/go_depth_hist.pdf")
 
     for n, d in G.nodes(data=True):
-        # print(n, d['depth'])
         curr_depth = d["depth"]
         depth_data.append(curr_depth)
         if curr_depth < min_depth:
@@ -247,6 +276,73 @@ def main():
     # plt.show()
     plt.close()
 
+    # get go term information from set of genes
+
+    gene_set = [
+        "P31371",
+        "P07996",
+        "P42830",
+        "P46695",
+        "O15169",
+        "Q9C004",
+        "P42574",
+        "P06756",
+        "P17676",
+        "Q15646",
+        "P13164",
+        "P09228",
+        "P20823",
+        "Q92985",
+        "Q7Z7D3",
+        "P20591",
+        "P22674",
+        "Q8IVU3",
+    ]  # testing with top 18 genes from 2020 paper
+    gene_go_data_dict = (
+        {}
+    )  # gene as the key and the value are the list of GO terms and their associated information
+
+    for gene in gene_set:
+        go_annotations_list = P.nodes[gene]["go_annotations_list"]
+
+        # get indirect annotations
+
+        complete_annotations_set = set()
+        for go_term in go_annotations_list:
+            indirect_annotations = nx.descendants(G, go_term)
+            complete_annotations_set.update(indirect_annotations)
+            # print(len(complete_annotations_set))
+        # print(complete_annotations_set)
+
+        go_depth_list = []  # contains (go_term, depth)
+        for go_term in complete_annotations_set:
+            depth = G.nodes[go_term]["depth"]
+            go_depth_list.append((go_term, depth))
+
+        go_depth_list.sort(key=lambda x: x[1])
+
+        gene_go_data_dict[gene] = go_depth_list
+
+    ranked = rank_go_terms(gene_go_data_dict)
+    go_comparison_data  = []
+    go_comparison_path = Path("./output/go_comparison.pdf")
+
+    for term, score, depth, freq in ranked:
+        go_comparison_data.append({"GO_term": f"{term} {G.nodes[term]["name"]}", "score" : score})
+
+    df = pd.DataFrame(go_comparison_data)
+    df_sorted = df.sort_values("score", ascending=False)
+    df_top = df_sorted.head(20)
+
+    plt.figure(figsize=(10, len(df_top) * 0.3))
+    plt.barh(df_top["GO_term"], df_top["score"], color="skyblue")
+    plt.xlabel("Score")
+    plt.ylabel("GO Term")
+    plt.title("GO Terms Ranked by Score")
+    plt.gca().invert_yaxis()  # so the highest score is at the top
+    plt.tight_layout()
+    plt.savefig(go_comparison_path)
+    plt.show()
 
 if __name__ == "__main__":
     main()
