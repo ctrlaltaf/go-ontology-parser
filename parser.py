@@ -93,7 +93,9 @@ def main():
 
     go_file = Path("data/go-basic.obo")
     terms = parse_obo_file(go_file)
-    G = nx.DiGraph()  # go hierarchy network
+    G = (
+        nx.DiGraph()
+    )  # go hierarchy network. edges are directed. if there is a directed edge from A to B, the A is more specifc and B is less specific
 
     for term in terms:
         go_id = term["id"][0]
@@ -147,10 +149,49 @@ def main():
             writer.writerow(row)
         f.close()
 
+    # print("is directed acyclic?",  nx.is_directed_acyclic_graph(G))
+
+    # get depth information for each go term in the hierarchy
+
+    depths = {}
+
+    # topological sort ensures we process parents before children
+    for node in nx.topological_sort(G):
+        preds = list(G.predecessors(node))
+        if not preds:  # no parents
+            depths[node] = 0
+        else:
+            depths[node] = 1 + max(depths[p] for p in preds)
+
+    nx.set_node_attributes(G, depths, "depth")
+    depth_data = []
+    min_depth = float("inf")
+    max_depth = -float("inf")
+    depth_fig_path = Path("./output/go_depth_hist.pdf")
+
+    for n, d in G.nodes(data=True):
+        # print(n, d['depth'])
+        curr_depth = d["depth"]
+        depth_data.append(curr_depth)
+        if curr_depth < min_depth:
+            min_depth = curr_depth
+        if curr_depth > max_depth:
+            max_depth = curr_depth
+
+    plt.figure(figsize=(10, 8))
+    plt.hist(depth_data, bins=max_depth + 1, alpha=0.7)
+    plt.title("Histogram of depth in GO hierarchy")
+    plt.xlabel("GO depth")
+    plt.ylabel("Frequency")
+    plt.savefig(depth_fig_path)
+    # plt.show()
+    plt.close()
+
     # get GO annotations for proteins
 
     go_annotation_path = Path("data/goa_human.gaf")
     data = get_go_annotation_data(go_annotation_path)
+    name_id_mapper = {}
     P = (
         nx.DiGraph()
     )  # network with nodes as GO terms. TODO edges could be TF relationships from PAthwayNet
@@ -163,6 +204,7 @@ def main():
         gene_name = entry["db_object_symbol"]
         go_qualifier = entry["qualifier"]
         go_id = entry["go_id"]
+        name_id_mapper[gene_name] = gene_id
 
         if gene_id not in P.nodes():
             P.add_node(
@@ -186,6 +228,8 @@ def main():
         "\tmax go annotation = ",
         max_go_annotation,
     )
+
+    # make hist of number of go annotations for all the genes
 
     go_hist_data = []
     hist_output_path = Path("./output/go_annotations_hist.pdf")
